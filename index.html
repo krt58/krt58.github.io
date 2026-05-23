@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GoalZone - Canlı Futbol Skorları</title>
+<title>MaçAydın - Canlı Futbol Skorları</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;500;600;700;800&family=Barlow:wght@300;400;500;600&display=swap" rel="stylesheet">
 <style>
@@ -742,7 +742,7 @@
 
 <header>
   <div class="header-inner">
-    <a class="logo" href="#">Goal<span>Zone</span></a>
+    <a class="logo" href="#">Maç<span>Aydın</span></a>
     <div class="nav-tabs">
       <button class="nav-tab active" onclick="switchMainTab('matches', this)">Maçlar</button>
       <button class="nav-tab" onclick="switchMainTab('standings', this)">Puan Durumu</button>
@@ -863,6 +863,7 @@
       <div id="standingsContent"></div>
     </div>
   </main>
+
 </div>
 
 <div class="modal-overlay" id="matchModal" onclick="closeModal(event)">
@@ -889,6 +890,538 @@
   </div>
 </div>
 
-<script src="script.js"></script>
+<script>
+// ============================================================
+// GLOBAL STATE
+// ============================================================
+let currentDate = 0;
+let currentFilter = 'all';
+let currentLeagueFilter = 'all';
+let currentSearchQuery = '';
+let currentModalMatch = null;
+let currentModalTab = 'events';
+let isLightTheme = false;
+let currentStandingsGroup = 'turkey';
+let matchData = [];
+let filteredMatches = [];
+
+const LEAGUES = {
+  'Süper Lig':       { flag:'🇹🇷', country:'Türkiye', group:'turkey', code: 'TB1' },
+  'TFF 1. Lig':      { flag:'🇹🇷', country:'Türkiye', group:'turkey', code: 'TB2' },
+  'Premier League':  { flag:'🏴󠁧󠁢󠁥󠁮󠁧󠁿', country:'İngiltere', group:'england', code: 'PL' },
+  'La Liga':         { flag:'🇪🇸', country:'İspanya', group:'spain', code: 'LA' },
+  'Bundesliga':      { flag:'🇩🇪', country:'Almanya', group:'germany', code: 'BL1' },
+  'Serie A':         { flag:'🇮🇹', country:'İtalya', group:'italy', code: 'SA' },
+  'Ligue 1':         { flag:'🇫🇷', country:'Fransa', group:'france', code: 'FL1' },
+  'Şampiyonlar Ligi':{ flag:'⭐', country:'UEFA', group:'europe', code: 'CL' },
+  'UEFA Avrupa Ligi':{ flag:'🌟', country:'UEFA', group:'europe', code: 'EL' },
+  'UECL':            { flag:'✨', country:'UEFA', group:'europe', code: 'UECL' },
+  'Eredivisie':      { flag:'🇳🇱', country:'Hollanda', group:'other', code: 'DED' },
+  'Primeira Liga':   { flag:'🇵🇹', country:'Portekiz', group:'other', code: 'PPL' },
+  'MLS':             { flag:'🇺🇸', country:'Amerika', group:'other', code: 'MLS' },
+};
+
+// ============================================================
+// API CONFIGURATION - FOOTBALL-DATA.ORG
+// ============================================================
+const API_CONFIG = {
+  baseUrl: 'https://api.football-data.org/v4',
+  // Ücretsiz API key - football-data.org'dan kendi keyi ile değiştirin
+  // https://www.football-data.org/
+  key: 'a2ee35f8-3d0f-4a92-b8d6-e7e0c58b57c8',
+};
+
+// ============================================================
+// HELPER FUNCTIONS
+// ============================================================
+function getDateStr(offset) {
+  const d = new Date();
+  d.setDate(d.getDate() + offset);
+  return d.toISOString().slice(0,10);
+}
+
+function getDateLabel() {
+  const now = new Date();
+  const d = new Date(now.getTime() + currentDate * 86400000);
+  return d.toLocaleDateString('tr-TR', { day:'numeric', month:'long', year:'numeric' });
+}
+
+function mapStatus(status, utcDate) {
+  if (!status) return 'upcoming';
+  const s = status.toLowerCase();
+  if (s.includes('finished') || s.includes('completed')) return 'finished';
+  if (s.includes('halftime')) return 'ht';
+  if (s.includes('in_play') || s.includes('live')) return 'live';
+  return 'upcoming';
+}
+
+// ============================================================
+// API FUNCTIONS - FOOTBALL-DATA.ORG
+// ============================================================
+async function fetchFromAPI(dateStr) {
+  try {
+    const response = await fetch(
+      `${API_CONFIG.baseUrl}/matches?dateFrom=${dateStr}&dateTo=${dateStr}`,
+      {
+        headers: { 'X-Auth-Token': API_CONFIG.key }
+      }
+    );
+    
+    if (!response.ok) {
+      console.warn('API error:', response.status);
+      return null;
+    }
+    
+    const data = await response.json();
+    
+    if (!data.matches || data.matches.length === 0) {
+      return null;
+    }
+    
+    return data.matches.map(m => {
+      const leagueName = m.competition.name;
+      const status = mapStatus(m.status, m.utcDate);
+      let minute = null;
+      
+      if (m.score && m.score.duration === 'LIVE' && m.score.fullTime.home === null) {
+        const startTime = new Date(m.utcDate);
+        const nowTime = new Date();
+        minute = Math.floor((nowTime - startTime) / 60000);
+      }
+      
+      const time = new Date(m.utcDate).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
+      
+      return {
+        id: m.id,
+        league: leagueName,
+        homeTeam: m.homeTeam.name,
+        homeCode: m.homeTeam.tla || m.homeTeam.name.substring(0, 3),
+        awayTeam: m.awayTeam.name,
+        awayCode: m.awayTeam.tla || m.awayTeam.name.substring(0, 3),
+        homeScore: m.score.fullTime.home,
+        awayScore: m.score.fullTime.away,
+        status: status,
+        time: time,
+        minute: minute,
+        source: 'api'
+      };
+    });
+  } catch (e) {
+    console.warn('API fetch failed:', e.message);
+    return null;
+  }
+}
+
+// ============================================================
+// FALLBACK DATA GENERATOR
+// ============================================================
+function generateFallbackMatches(dateOffset) {
+  const seed = dateOffset + 100;
+  const rng = (n, max, min=0) => ((seed * 9301 + n * 49297 + 233) % 1000 / 1000 * (max - min) + min) | 0;
+
+  let id = 1;
+  const matches = [];
+  const leagueConfigs = [
+    { league:'Süper Lig', teams:[
+        ['Galatasaray','GS'],['Fenerbahçe','FB'],['Beşiktaş','BJK'],['Trabzonspor','TS'],
+        ['Başakşehir','İBB'],['Sivasspor','SİV'],['Konyaspor','KON'],['Kasımpaşa','KAŞ'],
+      ], count: 3
+    },
+    { league:'Premier League', teams:[
+        ['Man City','MCI'],['Arsenal','ARS'],['Liverpool','LIV'],['Chelsea','CHE'],
+        ['Aston Villa','AVL'],['Newcastle','NEW'],['Man United','MUN'],['Spurs','TOT'],
+      ], count: 4
+    },
+    { league:'La Liga', teams:[
+        ['Real Madrid','RMA'],['Barcelona','BAR'],['Atletico Madrid','ATM'],['Sevilla','SEV'],
+        ['Real Sociedad','RSO'],['Villarreal','VIL'],['Athletic Club','ATH'],['Valencia','VAL'],
+      ], count: 3
+    },
+    { league:'Bundesliga', teams:[
+        ['Bayern Münih','FCB'],['Borussia Dortmund','BVB'],['Leverkusen','B04'],['Leipzig','RBL'],
+        ['Eintracht','SGE'],['Wolfsburg','WOB'],['Freiburg','SCF'],['Köln','KOE'],
+      ], count: 3
+    },
+    { league:'Serie A', teams:[
+        ['Inter Milan','INT'],['AC Milan','MIL'],['Juventus','JUV'],['Napoli','NAP'],
+        ['Roma','ROM'],['Lazio','LAZ'],['Fiorentina','FIO'],['Atalanta','ATA'],
+      ], count: 3
+    },
+    { league:'Ligue 1', teams:[
+        ['PSG','PSG'],['Monaco','MON'],['Nice','OGC'],['Lens','LEN'],
+        ['Lyon','OLY'],['Marseille','OM'],['Lille','LIL'],['Rennes','REN'],
+      ], count: 3
+    },
+  ];
+
+  const statusPool = dateOffset === 0 
+    ? ['live','live','live','finished','finished','finished','finished','upcoming','upcoming','upcoming']
+    : dateOffset === -1 
+    ? ['finished','finished','finished','finished','finished','finished']
+    : ['upcoming','upcoming','upcoming','upcoming'];
+
+  const times_upcoming = ['18:00','18:30','19:00','19:45','20:00','20:30','21:00','21:45'];
+  const times_finished = ['14:00','15:00','16:00','16:30','17:00','17:30'];
+  const minutes_live = [12,23,34,45,56,67,78,88];
+
+  leagueConfigs.forEach((cfg, li) => {
+    for (let m = 0; m < cfg.count; m++) {
+      const hi = rng(id * 7 + li * 3, cfg.teams.length);
+      const ai = rng(id * 13 + li * 5 + m * 7, cfg.teams.length);
+      if (hi === ai) continue;
+
+      const statusIdx = rng(id * 17 + m, statusPool.length);
+      const status = statusPool[statusIdx % statusPool.length];
+
+      let homeScore = null, awayScore = null, minute = null, time = '';
+
+      if (status === 'live') {
+        homeScore = rng(id * 11, 4);
+        awayScore = rng(id * 19, 4);
+        minute = minutes_live[rng(id * 3, minutes_live.length)];
+        time = minute + "'" 
+      } else if (status === 'finished') {
+        homeScore = rng(id * 7, 5);
+        awayScore = rng(id * 23, 5);
+        time = times_finished[rng(id, times_finished.length)];
+      } else {
+        time = times_upcoming[rng(id * 5, times_upcoming.length)];
+      }
+
+      matches.push({
+        id: `fallback_${id}`,
+        league: cfg.league,
+        homeTeam: cfg.teams[hi][0],
+        homeCode: cfg.teams[hi][1],
+        awayTeam: cfg.teams[ai][0],
+        awayCode: cfg.teams[ai][1],
+        homeScore,
+        awayScore,
+        status,
+        time,
+        minute,
+        source: 'fallback'
+      });
+      id++;
+    }
+  });
+
+  return matches;
+}
+
+// ============================================================
+// MAIN DATA LOADING
+// ============================================================
+async function loadMatches() {
+  const dateStr = getDateStr(currentDate);
+  showLoadingState();
+
+  let apiMatches = await fetchFromAPI(dateStr);
+
+  if (!apiMatches) {
+    matchData = generateFallbackMatches(currentDate);
+  } else {
+    matchData = apiMatches;
+  }
+
+  applyFilters();
+  updateLiveCount();
+  updateDateButtons();
+}
+
+// ============================================================
+// FILTERING & RENDERING
+// ============================================================
+function applyFilters() {
+  filteredMatches = matchData.filter(m => {
+    if (currentLeagueFilter !== 'all' && m.league !== currentLeagueFilter) return false;
+    if (currentFilter === 'live' && m.status !== 'live') return false;
+    if (currentFilter === 'finished' && m.status !== 'finished') return false;
+    if (currentFilter === 'upcoming' && m.status !== 'upcoming') return false;
+    if (currentSearchQuery) {
+      const q = currentSearchQuery.toLowerCase();
+      if (!m.homeTeam.toLowerCase().includes(q) &&
+          !m.awayTeam.toLowerCase().includes(q) &&
+          !m.league.toLowerCase().includes(q)) return false;
+    }
+    return true;
+  });
+  renderMatches();
+}
+
+function renderMatches() {
+  const container = document.getElementById('matchesContent');
+  if (filteredMatches.length === 0) {
+    container.innerHTML = `<div class="empty-state"><div class="icon">⚽</div><p>Bu tarihte maç bulunamadı</p></div>`;
+    return;
+  }
+
+  const byLeague = {};
+  filteredMatches.forEach(m => {
+    if (!byLeague[m.league]) byLeague[m.league] = [];
+    byLeague[m.league].push(m);
+  });
+
+  const leagueOrder = Object.keys(byLeague).sort((a,b) => {
+    const aLive = byLeague[a].filter(m=>m.status==='live').length;
+    const bLive = byLeague[b].filter(m=>m.status==='live').length;
+    return bLive - aLive;
+  });
+
+  let html = '';
+  leagueOrder.forEach(league => {
+    const info = LEAGUES[league] || { flag:'🏆', country:'' };
+    const matches = byLeague[league];
+    const liveCount = matches.filter(m=>m.status==='live').length;
+
+    html += `<div class="league-block">
+      <div class="league-header" onclick="toggleLeague(this)">
+        <span class="league-flag">${info.flag}</span>
+        <div>
+          <div class="league-name">${league}</div>
+          <div class="league-country">${info.country}</div>
+        </div>
+        <div class="league-meta">
+          ${liveCount > 0 ? `<span class="league-live-count">🔴 ${liveCount} CANLI</span>` : ''}
+          <span class="chevron open">▼</span>
+        </div>
+      </div>
+      <div class="league-matches">`;
+
+    matches.forEach(m => {
+      html += renderMatchRow(m);
+    });
+
+    html += `</div></div>`;
+  });
+
+  container.innerHTML = html;
+}
+
+function renderMatchRow(m) {
+  const isLive = m.status === 'live';
+  const isFinished = m.status === 'finished';
+  const isUpcoming = m.status === 'upcoming';
+
+  let timeHtml = '';
+  if (isLive) {
+    timeHtml = `<div class="match-time live"><div class="live-dot" style="margin:0 auto 3px;"></div>${m.minute}'</div>`;
+  } else {
+    timeHtml = `<div class="match-time">${m.time}</div>`;
+  }
+
+  const scoreHtml = isUpcoming
+    ? `<div class="score-box"><div class="score-text">-</div></div>`
+    : `<div class="score-box"><div class="score-text ${isLive?'live':''}">${m.homeScore} : ${m.awayScore}</div></div>`;
+
+  let statusBadge = '';
+  if (isFinished) statusBadge = `<span class="status-badge status-finished">MS</span>`;
+  else if (isLive) statusBadge = `<span class="status-badge status-live">🔴</span>`;
+  else statusBadge = `<span class="status-badge status-upcoming">⏳</span>`;
+
+  return `<div class="match-row ${isLive?'live-match':''}" onclick='openMatch("${m.id}")'>
+    ${timeHtml}
+    <div class="team-row">
+      <div class="team-logo">${(m.homeCode||'??').substring(0,2)}</div>
+      <div class="team-name">${m.homeTeam}</div>
+    </div>
+    ${scoreHtml}
+    <div class="team-row away">
+      <div class="team-logo">${(m.awayCode||'??').substring(0,2)}</div>
+      <div class="team-name">${m.awayTeam}</div>
+    </div>
+    <div class="match-status">${statusBadge}</div>
+  </div>`;
+}
+
+function showLoadingState() {
+  document.getElementById('matchesContent').innerHTML =
+    `<div class="loading-shimmer"></div>`.repeat(6) +
+    `<div style="text-align:center;padding:12px;font-size:12px;color:var(--text-muted);">Maçlar yükleniyor...</div>`;
+}
+
+// ============================================================
+// MODAL FUNCTIONS
+// ============================================================
+function openMatch(id) {
+  const match = matchData.find(m => String(m.id) === String(id));
+  if (!match) return;
+  currentModalMatch = match;
+  currentModalTab = 'events';
+
+  document.getElementById('modalLeagueName').textContent = LEAGUES[match.league]?.flag + ' ' + match.league;
+  document.getElementById('modalDate').textContent = getDateLabel();
+  document.getElementById('modalHome').textContent = match.homeTeam;
+  document.getElementById('modalAway').textContent = match.awayTeam;
+
+  const scoreEl = document.getElementById('modalScore');
+  if (match.status === 'upcoming') {
+    scoreEl.textContent = 'vs';
+    scoreEl.style.fontSize = '28px';
+  } else {
+    scoreEl.textContent = match.homeScore + ' - ' + match.awayScore;
+    scoreEl.style.fontSize = '';
+    if (match.status === 'live') scoreEl.classList.add('live');
+    else scoreEl.classList.remove('live');
+  }
+
+  let statusText = '';
+  if (match.status === 'live') statusText = `🔴 ${match.minute}' - CANLI`;
+  else if (match.status === 'finished') statusText = `✅ Maç Sona Erdi`;
+  else statusText = `🕐 ${match.time}`;
+  document.getElementById('modalStatusRow').textContent = statusText;
+
+  document.querySelectorAll('.modal-tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.modal-tab')[0].classList.add('active');
+
+  switchModalTab('events', null);
+  document.getElementById('matchModal').classList.add('open');
+  document.body.style.overflow = 'hidden';
+}
+
+function switchModalTab(tab, btn) {
+  currentModalTab = tab;
+  if (btn) {
+    document.querySelectorAll('.modal-tab').forEach(t => t.classList.remove('active'));
+    btn.classList.add('active');
+  }
+  renderModalContent(tab);
+}
+
+function renderModalContent(tab) {
+  const match = currentModalMatch;
+  if (!match) return;
+  const container = document.getElementById('modalContent');
+
+  if (tab === 'events') {
+    container.innerHTML = `<div class="empty-state"><div class="icon">⚽</div><p>Detaylı olaylar birazdan eklenecek</p></div>`;
+  } else if (tab === 'lineup') {
+    container.innerHTML = `<div class="empty-state"><div class="icon">👥</div><p>Kadro bilgisi birazdan eklenecek</p></div>`;
+  } else if (tab === 'stats') {
+    container.innerHTML = `<div class="empty-state"><div class="icon">📊</div><p>İstatistik bilgisi birazdan eklenecek</p></div>`;
+  }
+}
+
+function closeModal(e) {
+  if (e.target.id === 'matchModal') closeModalBtn();
+}
+
+function closeModalBtn() {
+  document.getElementById('matchModal').classList.remove('open');
+  document.body.style.overflow = '';
+}
+
+// ============================================================
+// STANDINGS (PLACEHOLDER)
+// ============================================================
+function renderStandings(group) {
+  document.getElementById('standingsContent').innerHTML = 
+    `<div class="empty-state"><div class="icon">🏆</div><p>Puan durumu bilgisi hazırlanıyor...</p></div>`;
+}
+
+// ============================================================
+// UI CONTROLS
+// ============================================================
+function toggleLeague(header) {
+  const matchesEl = header.nextElementSibling;
+  const chevron = header.querySelector('.chevron');
+  const isOpen = matchesEl.style.display !== 'none';
+  matchesEl.style.display = isOpen ? 'none' : 'block';
+  chevron.classList.toggle('open', !isOpen);
+}
+
+function selectDate(offset) {
+  currentDate = offset;
+  document.querySelectorAll('.date-btn').forEach(b => b.classList.remove('active'));
+  const btnMap = { '-1': 'btn-yesterday', '0': 'btn-today', '1': 'btn-tomorrow' };
+  document.getElementById(btnMap[offset]).classList.add('active');
+  loadMatches();
+}
+
+function updateDateButtons() {
+  const now = new Date();
+  const dates = {
+    '-1': new Date(now.getTime() - 86400000),
+    '0': now,
+    '1': new Date(now.getTime() + 86400000)
+  };
+  const btnMap = { '-1': 'btn-yesterday', '0': 'btn-today', '1': 'btn-tomorrow' };
+  const labels = { '-1': 'Dün', '0': 'Bugün', '1': 'Yarın' };
+
+  Object.keys(dates).forEach(offset => {
+    const d = dates[offset];
+    const btn = document.getElementById(btnMap[offset]);
+    btn.textContent = offset === '0' ? 'Bugün' : labels[offset] + ' ' + d.getDate() + '/' + (d.getMonth()+1);
+  });
+}
+
+function filterLeague(league) {
+  currentLeagueFilter = league;
+  document.querySelectorAll('.sidebar-item').forEach(item => item.classList.remove('active'));
+  event.currentTarget.classList.add('active');
+  applyFilters();
+}
+
+function setFilter(filter, btn) {
+  currentFilter = filter;
+  document.querySelectorAll('.filter-pill').forEach(p => p.classList.remove('active'));
+  btn.classList.add('active');
+  applyFilters();
+}
+
+function filterMatches(query) {
+  currentSearchQuery = query;
+  applyFilters();
+}
+
+function switchMainTab(tab, btn) {
+  document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+  btn.classList.add('active');
+
+  const mc = document.getElementById('matchesContainer');
+  const sc = document.getElementById('standingsContainer');
+
+  if (tab === 'matches') {
+    mc.style.display = 'block';
+    sc.style.display = 'none';
+  } else {
+    mc.style.display = 'none';
+    sc.style.display = 'block';
+    renderStandings(currentStandingsGroup);
+  }
+}
+
+function selectStandingsGroup(group, btn) {
+  currentStandingsGroup = group;
+  document.querySelectorAll('.group-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderStandings(group);
+}
+
+function toggleTheme() {
+  isLightTheme = !isLightTheme;
+  document.body.classList.toggle('light-theme', isLightTheme);
+  document.getElementById('themeBtn').textContent = isLightTheme ? '☀️' : '🌙';
+}
+
+function updateLiveCount() {
+  const count = matchData.filter(m => m.status === 'live').length;
+  document.getElementById('liveCount').textContent = count + ' CANLI';
+}
+
+// ============================================================
+// INITIALIZATION
+// ============================================================
+document.getElementById('standingsContainer').style.display = 'none';
+updateDateButtons();
+loadMatches();
+
+// Auto-refresh every 30 seconds for live matches
+setInterval(loadMatches, 30000);
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeModalBtn();
+});
+</script>
 </body>
 </html>
